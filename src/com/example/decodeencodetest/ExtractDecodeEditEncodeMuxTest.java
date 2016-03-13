@@ -51,7 +51,7 @@ import java.util.concurrent.atomic.AtomicReference;
 public class ExtractDecodeEditEncodeMuxTest extends AndroidTestCase {
 
     private static final String TAG = ExtractDecodeEditEncodeMuxTest.class.getSimpleName();
-    private static final boolean VERBOSE = false; // lots of logging
+    private static final boolean VERBOSE = true; // lots of logging
 
     /** How long to wait for the next buffer to become available. */
     private static final int TIMEOUT_USEC = 10000;
