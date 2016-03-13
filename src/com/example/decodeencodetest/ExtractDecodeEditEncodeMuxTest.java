@@ -25,6 +25,10 @@ import android.media.MediaExtractor;
 import android.media.MediaFormat;
 import android.media.MediaMuxer;
 import android.os.Environment;
+import android.os.Handler;
+import android.os.HandlerThread;
+import android.os.Looper;
+import android.os.Message;
 import android.test.AndroidTestCase;
 import android.util.Log;
 import android.view.Surface;
@@ -463,6 +467,9 @@ public class ExtractDecodeEditEncodeMuxTest extends AndroidTestCase {
                     exception = e;
                 }
             }
+            if (mVideoDecoderHandlerThread != null) {
+                mVideoDecoderHandlerThread.quitSafely();
+            }
             mVideoExtractor = null;
             mAudioExtractor = null;
             mOutputSurface = null;
@@ -472,6 +479,7 @@ public class ExtractDecodeEditEncodeMuxTest extends AndroidTestCase {
             mVideoEncoder = null;
             mAudioEncoder = null;
             mMuxer = null;
+            mVideoDecoderHandlerThread = null;
         }
         if (exception != null) {
             throw exception;
@@ -490,6 +498,49 @@ public class ExtractDecodeEditEncodeMuxTest extends AndroidTestCase {
         return extractor;
     }
 
+    static class CallbackHandler extends Handler {
+        CallbackHandler(Looper l) {
+            super(l);
+        }
+        private MediaCodec mCodec;
+        private boolean mEncoder;
+        private MediaCodec.Callback mCallback;
+        private String mMime;
+        private boolean mSetDone;
+        @Override
+        public void handleMessage(Message msg) {
+            try {
+                mCodec = mEncoder ? MediaCodec.createEncoderByType(mMime) : MediaCodec.createDecoderByType(mMime);
+            } catch (IOException ioe) {
+            }
+            mCodec.setCallback(mCallback);
+            synchronized (this) {
+                mSetDone = true;
+                notifyAll();
+            }
+        }
+        void create(boolean encoder, String mime, MediaCodec.Callback callback) {
+            mEncoder = encoder;
+            mMime = mime;
+            mCallback = callback;
+            mSetDone = false;
+            sendEmptyMessage(0);
+            synchronized (this) {
+                while (!mSetDone) {
+                    try {
+                        wait();
+                    } catch (InterruptedException ie) {
+                    }
+                }
+            }
+        }
+        MediaCodec getCodec() {
+            return mCodec;
+        }
+    }
+    private HandlerThread mVideoDecoderHandlerThread;
+    private CallbackHandler mVideoDecoderHandler;
+
     /**
      * Creates a decoder for the given format, which outputs to the given surface.
      *
@@ -497,8 +548,10 @@ public class ExtractDecodeEditEncodeMuxTest extends AndroidTestCase {
      * @param surface into which to decode the frames
      */
     private MediaCodec createVideoDecoder(MediaFormat inputFormat, Surface surface) throws IOException {
-        MediaCodec decoder = MediaCodec.createDecoderByType(getMimeTypeFor(inputFormat));
-        decoder.setCallback(new MediaCodec.Callback() {
+        mVideoDecoderHandlerThread = new HandlerThread("DecoderThread");
+        mVideoDecoderHandlerThread.start();
+        mVideoDecoderHandler = new CallbackHandler(mVideoDecoderHandlerThread.getLooper());
+        MediaCodec.Callback callback = new MediaCodec.Callback() {
             public void onError(MediaCodec codec, MediaCodec.CodecException exception) {
             }
             public void onOutputFormatChanged(MediaCodec codec, MediaFormat format) {
@@ -583,7 +636,22 @@ public class ExtractDecodeEditEncodeMuxTest extends AndroidTestCase {
                 mVideoDecodedFrameCount++;
                 logState();
             }
-        });
+        };
+        // Create the decoder on a different thread, in order to have the callbacks there.
+        // This makes sure that the blocking waiting and rendering in onOutputBufferAvailable
+        // won't block other callbacks (e.g. blocking encoder output callbacks), which
+        // would otherwise lead to the transcoding pipeline to lock up.
+
+        // Since API 23, we could just do setCallback(callback, mVideoDecoderHandler) instead
+        // of using a custom Handler and passing a message to create the MediaCodec there.
+
+        // When the callbacks are received on a different thread, the updating of the variables
+        // that are used for state logging (mVideoExtractedFrameCount, mVideoDecodedFrameCount,
+        // mVideoExtractorDone and mVideoDecoderDone) should ideally be synchronized properly
+        // against accesses from other threads, but that is left out for brevity since it's
+        // not essential to the actual transcoding.
+        mVideoDecoderHandler.create(false, getMimeTypeFor(inputFormat), callback);
+        MediaCodec decoder = mVideoDecoderHandler.getCodec();
         decoder.configure(inputFormat, surface, null, 0);
         decoder.start();
         return decoder;
