@@ -22,6 +22,8 @@ import android.opengl.GLES20;
 import android.opengl.GLES11Ext;
 import android.opengl.GLSurfaceView;
 import android.opengl.Matrix;
+import android.os.Handler;
+import android.os.HandlerThread;
 import android.util.Log;
 import android.view.Surface;
 
@@ -71,6 +73,9 @@ class OutputSurface implements SurfaceTexture.OnFrameAvailableListener {
 
     private TextureRender mTextureRender;
 
+    private HandlerThread mHandlerThread;
+    private Handler mCallbackHandler;
+
     /**
      * Creates an OutputSurface backed by a pbuffer with the specifed dimensions.  The new
      * EGL context and surface will be made current.  Creates a Surface that can be passed
@@ -110,18 +115,12 @@ class OutputSurface implements SurfaceTexture.OnFrameAvailableListener {
         if (VERBOSE) Log.d(TAG, "textureID=" + mTextureRender.getTextureId());
         mSurfaceTexture = new SurfaceTexture(mTextureRender.getTextureId());
 
-        // This doesn't work if OutputSurface is created on the thread that CTS started for
-        // these test cases.
-        //
-        // The CTS-created thread has a Looper, and the SurfaceTexture constructor will
-        // create a Handler that uses it.  The "frame available" message is delivered
-        // there, but since we're not a Looper-based thread we'll never see it.  For
-        // this to do anything useful, OutputSurface must be created on a thread without
-        // a Looper, so that SurfaceTexture uses the main application Looper instead.
-        //
+        mHandlerThread = new HandlerThread("OutputSurface callback thread");
+        mHandlerThread.start();
+        mCallbackHandler = new Handler(mHandlerThread.getLooper());
         // Java language note: passing "this" out of a constructor is generally unwise,
         // but we should be able to get away with it here.
-        mSurfaceTexture.setOnFrameAvailableListener(this);
+        mSurfaceTexture.setOnFrameAvailableListener(this, mCallbackHandler);
 
         mSurface = new Surface(mSurfaceTexture);
     }
@@ -208,6 +207,11 @@ class OutputSurface implements SurfaceTexture.OnFrameAvailableListener {
         mTextureRender = null;
         mSurface = null;
         mSurfaceTexture = null;
+
+        if (mHandlerThread != null) {
+            mHandlerThread.quitSafely();
+        }
+        mHandlerThread = null;
     }
 
     /**
