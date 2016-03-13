@@ -146,6 +146,12 @@ class InputSurface {
         }
     }
 
+    public void releaseEGLContext() {
+        if (!EGL14.eglMakeCurrent(mEGLDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)) {
+            throw new RuntimeException("eglMakeCurrent failed");
+        }
+    }
+
     /**
      * Calls eglSwapBuffers.  Use this to "publish" the current frame.
      */

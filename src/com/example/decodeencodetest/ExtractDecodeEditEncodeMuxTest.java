@@ -337,6 +337,7 @@ public class ExtractDecodeEditEncodeMuxTest extends AndroidTestCase {
                 mOutputSurface = new OutputSurface();
                 mOutputSurface.changeFragmentShader(FRAGMENT_SHADER);
                 mVideoDecoder = createVideoDecoder(inputFormat, mOutputSurface.getSurface());
+                mInputSurface.releaseEGLContext();
             }
 
             if (mCopyAudio) {
@@ -561,6 +562,7 @@ public class ExtractDecodeEditEncodeMuxTest extends AndroidTestCase {
                 boolean render = info.size != 0;
                 codec.releaseOutputBuffer(index, render);
                 if (render) {
+                    mInputSurface.makeCurrent();
                     if (VERBOSE) Log.d(TAG, "output surface: await new image");
                     mOutputSurface.awaitNewImage();
                     // Edit the frame and send it to the encoder.
@@ -571,6 +573,7 @@ public class ExtractDecodeEditEncodeMuxTest extends AndroidTestCase {
                     if (VERBOSE) Log.d(TAG, "input surface: swap buffers");
                     mInputSurface.swapBuffers();
                     if (VERBOSE) Log.d(TAG, "video encoder: notified of new frame");
+                    mInputSurface.releaseEGLContext();
                 }
                 if ((info.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
                     if (VERBOSE) Log.d(TAG, "video decoder: EOS");
