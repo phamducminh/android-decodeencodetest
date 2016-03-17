@@ -912,6 +912,8 @@ public class ExtractDecodeEditEncodeMuxTest extends AndroidTestCase {
             mMuxer.writeSampleData(
                     mOutputVideoTrack, encoderOutputBuffer, info);
         }
+        mVideoEncoder.releaseOutputBuffer(index, false);
+        mVideoEncodedFrameCount++;
         if ((info.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
             if (VERBOSE) Log.d(TAG, "video encoder: EOS");
             synchronized (this) {
@@ -919,8 +921,6 @@ public class ExtractDecodeEditEncodeMuxTest extends AndroidTestCase {
                 notifyAll();
             }
         }
-        mVideoEncoder.releaseOutputBuffer(index, false);
-        mVideoEncodedFrameCount++;
         logState();
     }
     private void muxAudio(int index, MediaCodec.BufferInfo info) {
@@ -943,6 +943,8 @@ public class ExtractDecodeEditEncodeMuxTest extends AndroidTestCase {
             mMuxer.writeSampleData(
                     mOutputAudioTrack, encoderOutputBuffer, info);
         }
+        mAudioEncoder.releaseOutputBuffer(index, false);
+        mAudioEncodedFrameCount++;
         if ((info.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
             if (VERBOSE) Log.d(TAG, "audio encoder: EOS");
             synchronized (this) {
@@ -950,8 +952,6 @@ public class ExtractDecodeEditEncodeMuxTest extends AndroidTestCase {
                 notifyAll();
             }
         }
-        mAudioEncoder.releaseOutputBuffer(index, false);
-        mAudioEncodedFrameCount++;
         logState();
     }
 
