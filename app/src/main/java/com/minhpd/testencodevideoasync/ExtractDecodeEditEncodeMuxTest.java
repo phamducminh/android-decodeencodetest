@@ -57,7 +57,6 @@ public class ExtractDecodeEditEncodeMuxTest {
 
     private static final String TAG = ExtractDecodeEditEncodeMuxTest.class.getSimpleName();
     private static final boolean VERBOSE = true; // lots of logging
-    private static final boolean VERBOSE_AUDIO = true; // lots of logging
 
     /** How long to wait for the next buffer to become available. */
     private static final int TIMEOUT_USEC = 10000;
@@ -75,11 +74,11 @@ public class ExtractDecodeEditEncodeMuxTest {
 
     // parameters for the audio encoder
     private static final String OUTPUT_AUDIO_MIME_TYPE = "audio/mp4a-latm"; // Advanced Audio Coding
-    private static final int OUTPUT_AUDIO_CHANNEL_COUNT = 1; // Must match the input stream.
+    private static int OUTPUT_AUDIO_CHANNEL_COUNT = 2; // Must match the input stream.
     private static final int OUTPUT_AUDIO_BIT_RATE = 128 * 1024;
     private static final int OUTPUT_AUDIO_AAC_PROFILE =
             MediaCodecInfo.CodecProfileLevel.AACObjectHE;
-    private static final int OUTPUT_AUDIO_SAMPLE_RATE_HZ = 44100; // Must match the input stream.
+    private static int OUTPUT_AUDIO_SAMPLE_RATE_HZ = 44100; // Must match the input stream.
 
     /**
      * Used for editing the frames.
@@ -358,10 +357,20 @@ public class ExtractDecodeEditEncodeMuxTest {
                 Log.d(TAG, "missing audio track in test video"/*, audioInputTrack != -1*/);
                 MediaFormat inputFormat = mAudioExtractor.getTrackFormat(audioInputTrack);
 
+                // Audio sample rate and channel count must match the input stream
+                int audioOutputSampleRate = OUTPUT_AUDIO_SAMPLE_RATE_HZ;
+                int audioOutputChannelCount = OUTPUT_AUDIO_CHANNEL_COUNT;
+
+                if (inputFormat.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
+                    audioOutputSampleRate = inputFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE);
+                }
+                if (inputFormat.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
+                    audioOutputChannelCount = inputFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT);
+                }
+
                 MediaFormat outputAudioFormat =
-                        MediaFormat.createAudioFormat(
-                                OUTPUT_AUDIO_MIME_TYPE, OUTPUT_AUDIO_SAMPLE_RATE_HZ,
-                                OUTPUT_AUDIO_CHANNEL_COUNT);
+                        MediaFormat.createAudioFormat(OUTPUT_AUDIO_MIME_TYPE, audioOutputSampleRate,
+                                audioOutputChannelCount);
                 outputAudioFormat.setInteger(MediaFormat.KEY_BIT_RATE, OUTPUT_AUDIO_BIT_RATE);
                 outputAudioFormat.setInteger(MediaFormat.KEY_AAC_PROFILE, OUTPUT_AUDIO_AAC_PROFILE);
 
@@ -740,7 +749,7 @@ public class ExtractDecodeEditEncodeMuxTest {
             }
             public void onOutputFormatChanged(MediaCodec codec, MediaFormat format) {
                 mDecoderOutputAudioFormat = codec.getOutputFormat();
-                if (VERBOSE_AUDIO) {
+                if (VERBOSE) {
                     Log.d(TAG, "audio decoder: output format changed: "
                             + mDecoderOutputAudioFormat);
                 }
@@ -750,7 +759,7 @@ public class ExtractDecodeEditEncodeMuxTest {
                 while (!mAudioExtractorDone) {
                     int size = mAudioExtractor.readSampleData(decoderInputBuffer, 0);
                     long presentationTime = mAudioExtractor.getSampleTime();
-                    if (VERBOSE_AUDIO) {
+                    if (VERBOSE) {
                         Log.d(TAG, "audio extractor: returned buffer of size " + size);
                         Log.d(TAG, "audio extractor: returned buffer for time " + presentationTime);
                     }
@@ -764,7 +773,7 @@ public class ExtractDecodeEditEncodeMuxTest {
                     }
                     mAudioExtractorDone = !mAudioExtractor.advance();
                     if (mAudioExtractorDone) {
-                        if (VERBOSE_AUDIO) Log.d(TAG, "audio extractor: EOS");
+                        if (VERBOSE) Log.d(TAG, "audio extractor: EOS");
                         codec.queueInputBuffer(
                                 index,
                                 0,
@@ -779,19 +788,19 @@ public class ExtractDecodeEditEncodeMuxTest {
                 }
             }
             public void onOutputBufferAvailable(MediaCodec codec, int index, MediaCodec.BufferInfo info) {
-                if (VERBOSE_AUDIO) {
+                if (VERBOSE) {
                     Log.d(TAG, "audio decoder: returned output buffer: " + index);
                 }
-                if (VERBOSE_AUDIO) {
+                if (VERBOSE) {
                     Log.d(TAG, "audio decoder: returned buffer of size " + info.size);
                 }
                 ByteBuffer decoderOutputBuffer = codec.getOutputBuffer(index);
                 if ((info.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
-                    if (VERBOSE_AUDIO) Log.d(TAG, "audio decoder: codec config buffer");
+                    if (VERBOSE) Log.d(TAG, "audio decoder: codec config buffer");
                     codec.releaseOutputBuffer(index, false);
                     return;
                 }
-                if (VERBOSE_AUDIO) {
+                if (VERBOSE) {
                     Log.d(TAG, "audio decoder: returned buffer for time "
                             + info.presentationTimeUs);
                 }
@@ -819,7 +828,7 @@ public class ExtractDecodeEditEncodeMuxTest {
             public void onError(MediaCodec codec, MediaCodec.CodecException exception) {
             }
             public void onOutputFormatChanged(MediaCodec codec, MediaFormat format) {
-                if (VERBOSE_AUDIO) Log.d(TAG, "audio encoder: output format changed");
+                if (VERBOSE) Log.d(TAG, "audio encoder: output format changed");
                 if (mOutputAudioTrack >= 0) {
                     Log.d(TAG, "audio encoder changed its output format again?");
                 }
@@ -828,14 +837,14 @@ public class ExtractDecodeEditEncodeMuxTest {
                 setupMuxer();
             }
             public void onInputBufferAvailable(MediaCodec codec, int index) {
-                if (VERBOSE_AUDIO) {
+                if (VERBOSE) {
                     Log.d(TAG, "audio encoder: returned input buffer: " + index);
                 }
                 mPendingAudioEncoderInputBufferIndices.add(index);
-//                tryEncodeAudio();
+                tryEncodeAudio();
             }
             public void onOutputBufferAvailable(MediaCodec codec, int index, MediaCodec.BufferInfo info) {
-                if (VERBOSE_AUDIO) {
+                if (VERBOSE) {
                     Log.d(TAG, "audio encoder: returned output buffer: " + index);
                     Log.d(TAG, "audio encoder: returned buffer of size " + info.size);
                 }
@@ -860,11 +869,11 @@ public class ExtractDecodeEditEncodeMuxTest {
         ByteBuffer encoderInputBuffer = mAudioEncoder.getInputBuffer(encoderIndex);
         int size = info.size;
         long presentationTime = info.presentationTimeUs;
-        if (VERBOSE_AUDIO) {
+        if (VERBOSE) {
             Log.d(TAG, "audio decoder: processing pending buffer: "
                     + decoderIndex);
         }
-        if (VERBOSE_AUDIO) {
+        if (VERBOSE) {
             Log.d(TAG, "audio decoder: pending buffer of size " + size);
             Log.d(TAG, "audio decoder: pending buffer for time " + presentationTime);
         }
@@ -885,7 +894,7 @@ public class ExtractDecodeEditEncodeMuxTest {
         mAudioDecoder.releaseOutputBuffer(decoderIndex, false);
         if ((info.flags
                 & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
-            if (VERBOSE_AUDIO) Log.d(TAG, "audio decoder: EOS");
+            if (VERBOSE) Log.d(TAG, "audio decoder: EOS");
             mAudioDecoderDone = true;
         }
         logState();
@@ -959,12 +968,12 @@ public class ExtractDecodeEditEncodeMuxTest {
         }
         ByteBuffer encoderOutputBuffer = mAudioEncoder.getOutputBuffer(index);
         if ((info.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
-            if (VERBOSE_AUDIO) Log.d(TAG, "audio encoder: codec config buffer");
+            if (VERBOSE) Log.d(TAG, "audio encoder: codec config buffer");
             // Simply ignore codec config buffers.
             mAudioEncoder.releaseOutputBuffer(index, false);
             return;
         }
-        if (VERBOSE_AUDIO) {
+        if (VERBOSE) {
             Log.d(TAG, "audio encoder: returned buffer for time " + info.presentationTimeUs);
         }
         if (info.size != 0) {
@@ -974,7 +983,7 @@ public class ExtractDecodeEditEncodeMuxTest {
         mAudioEncoder.releaseOutputBuffer(index, false);
         mAudioEncodedFrameCount++;
         if ((info.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
-            if (VERBOSE_AUDIO) Log.d(TAG, "audio encoder: EOS");
+            if (VERBOSE) Log.d(TAG, "audio encoder: EOS");
             synchronized (this) {
                 mAudioEncoderDone = true;
                 notifyAll();
