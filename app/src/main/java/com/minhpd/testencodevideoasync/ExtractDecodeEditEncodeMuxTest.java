@@ -30,6 +30,7 @@ import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.Looper;
 import android.os.Message;
+import android.support.annotation.NonNull;
 import android.util.Log;
 import android.view.Surface;
 
@@ -38,6 +39,8 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.LinkedList;
 import java.util.concurrent.atomic.AtomicReference;
+
+import com.minhpd.testencodevideoasync.SafeMediaCodecCallback.MediaCodecCallbackException;
 
 /**
  * Test for the integration of MediaMuxer and MediaCodec's encoder.
@@ -280,6 +283,7 @@ public class ExtractDecodeEditEncodeMuxTest {
         mAudioExtractorDone = false;
         mAudioDecoderDone = false;
         mAudioEncoderDone = false;
+        mIsCrashed = false;
         mPendingAudioDecoderOutputBufferIndices = new LinkedList<Integer>();
         mPendingAudioDecoderOutputBufferInfos = new LinkedList<MediaCodec.BufferInfo>();
         mPendingAudioEncoderInputBufferIndices = new LinkedList<Integer>();
@@ -354,31 +358,35 @@ public class ExtractDecodeEditEncodeMuxTest {
             if (mCopyAudio) {
                 mAudioExtractor = createExtractor();
                 int audioInputTrack = getAndSelectAudioTrackIndex(mAudioExtractor);
-                Log.d(TAG, "missing audio track in test video"/*, audioInputTrack != -1*/);
-                MediaFormat inputFormat = mAudioExtractor.getTrackFormat(audioInputTrack);
+                if (audioInputTrack != -1) {
+                    MediaFormat inputFormat = mAudioExtractor.getTrackFormat(audioInputTrack);
 
-                // Audio sample rate and channel count must match the input stream
-                int audioOutputSampleRate = OUTPUT_AUDIO_SAMPLE_RATE_HZ;
-                int audioOutputChannelCount = OUTPUT_AUDIO_CHANNEL_COUNT;
+                    // Audio sample rate and channel count must match the input stream
+                    int audioOutputSampleRate = OUTPUT_AUDIO_SAMPLE_RATE_HZ;
+                    int audioOutputChannelCount = OUTPUT_AUDIO_CHANNEL_COUNT;
 
-                if (inputFormat.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
-                    audioOutputSampleRate = inputFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE);
+                    if (inputFormat.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
+                        audioOutputSampleRate = inputFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE);
+                    }
+                    if (inputFormat.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
+                        audioOutputChannelCount = inputFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT);
+                    }
+
+                    MediaFormat outputAudioFormat =
+                            MediaFormat.createAudioFormat(OUTPUT_AUDIO_MIME_TYPE, audioOutputSampleRate,
+                                    audioOutputChannelCount);
+                    outputAudioFormat.setInteger(MediaFormat.KEY_BIT_RATE, OUTPUT_AUDIO_BIT_RATE);
+                    outputAudioFormat.setInteger(MediaFormat.KEY_AAC_PROFILE, OUTPUT_AUDIO_AAC_PROFILE);
+
+                    // Create a MediaCodec for the desired codec, then configure it as an encoder with
+                    // our desired properties. Request a Surface to use for input.
+                    mAudioEncoder = createAudioEncoder(audioCodecInfo, outputAudioFormat);
+                    // Create a MediaCodec for the decoder, based on the extractor's format.
+                    mAudioDecoder = createAudioDecoder(inputFormat);
+                } else {
+                    Log.d(TAG, "missing audio track in test video");
+                    mCopyAudio = false;
                 }
-                if (inputFormat.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) {
-                    audioOutputChannelCount = inputFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT);
-                }
-
-                MediaFormat outputAudioFormat =
-                        MediaFormat.createAudioFormat(OUTPUT_AUDIO_MIME_TYPE, audioOutputSampleRate,
-                                audioOutputChannelCount);
-                outputAudioFormat.setInteger(MediaFormat.KEY_BIT_RATE, OUTPUT_AUDIO_BIT_RATE);
-                outputAudioFormat.setInteger(MediaFormat.KEY_AAC_PROFILE, OUTPUT_AUDIO_AAC_PROFILE);
-
-                // Create a MediaCodec for the desired codec, then configure it as an encoder with
-                // our desired properties. Request a Surface to use for input.
-                mAudioEncoder = createAudioEncoder(audioCodecInfo, outputAudioFormat);
-                // Create a MediaCodec for the decoder, based on the extractor's format.
-                mAudioDecoder = createAudioDecoder(inputFormat);
             }
 
             awaitEncode();
@@ -584,21 +592,20 @@ public class ExtractDecodeEditEncodeMuxTest {
      * @param inputFormat the format of the stream to decode
      * @param surface into which to decode the frames
      */
-    private MediaCodec createVideoDecoder(MediaFormat inputFormat, Surface surface) throws IOException {
+    private MediaCodec createVideoDecoder(MediaFormat inputFormat, Surface surface)
+            throws IOException, IllegalStateException {
         mVideoDecoderHandlerThread = new HandlerThread("DecoderThread");
         mVideoDecoderHandlerThread.start();
         mVideoDecoderHandler = new CallbackHandler(mVideoDecoderHandlerThread.getLooper());
-        MediaCodec.Callback callback = new MediaCodec.Callback() {
-            public void onError(MediaCodec codec, MediaCodec.CodecException exception) {
+        MediaCodecCallbackException mediaCodecCallbackException = new MediaCodecCallbackException() {
+            @Override
+            public void onException(Exception e) {
+                handleMediaCodecCallbackException(e);
             }
-            public void onOutputFormatChanged(MediaCodec codec, MediaFormat format) {
-                mDecoderOutputVideoFormat = codec.getOutputFormat();
-                if (VERBOSE) {
-                    Log.d(TAG, "video decoder: output format changed: "
-                            + mDecoderOutputVideoFormat);
-                }
-            }
-            public void onInputBufferAvailable(MediaCodec codec, int index) {
+        };
+        SafeMediaCodecCallback callback = new SafeMediaCodecCallback(mediaCodecCallbackException) {
+            @Override
+            public void onInputBufferAvailableSafe(@NonNull MediaCodec codec, int index) {
                 // Extract video from file and feed to decoder.
                 // We feed packets regardless of whether the muxer is set up or not.
                 // If the muxer isn't set up yet, the encoder output will be queued up,
@@ -635,7 +642,10 @@ public class ExtractDecodeEditEncodeMuxTest {
                         break;
                 }
             }
-            public void onOutputBufferAvailable(MediaCodec codec, int index, MediaCodec.BufferInfo info) {
+
+            @Override
+            public void onOutputBufferAvailableSafe(@NonNull MediaCodec codec, int index,
+                                                    @NonNull MediaCodec.BufferInfo info) {
                 if (VERBOSE) {
                     Log.d(TAG, "video decoder: returned output buffer: " + index);
                     Log.d(TAG, "video decoder: returned buffer of size " + info.size);
@@ -673,6 +683,16 @@ public class ExtractDecodeEditEncodeMuxTest {
                 mVideoDecodedFrameCount++;
                 logState();
             }
+
+            @Override
+            public void onOutputFormatChangedSafe(@NonNull MediaCodec codec,
+                                                  @NonNull MediaFormat format) {
+                mDecoderOutputVideoFormat = codec.getOutputFormat();
+                if (VERBOSE) {
+                    Log.d(TAG, "video decoder: output format changed: "
+                            + mDecoderOutputVideoFormat);
+                }
+            }
         };
         // Create the decoder on a different thread, in order to have the callbacks there.
         // This makes sure that the blocking waiting and rendering in onOutputBufferAvailable
@@ -694,6 +714,14 @@ public class ExtractDecodeEditEncodeMuxTest {
         return decoder;
     }
 
+    synchronized void handleMediaCodecCallbackException(Exception e) {
+        if (mCopyVideo) mVideoEncoderDone = true;
+        if (mCopyAudio) mAudioEncoderDone = true;
+        mIsCrashed = true;
+        Log.d(TAG, "handleMediaCodecCallbackException");
+        notifyAll();
+    }
+
     /**
      * Creates an encoder for the given format using the specified codec, taking input from a
      * surface.
@@ -709,10 +737,31 @@ public class ExtractDecodeEditEncodeMuxTest {
             MediaFormat format,
             AtomicReference<Surface> surfaceReference) throws IOException {
         MediaCodec encoder = MediaCodec.createByCodecName(codecInfo.getName());
-        encoder.setCallback(new MediaCodec.Callback() {
-            public void onError(MediaCodec codec, MediaCodec.CodecException exception) {
+        MediaCodecCallbackException mediaCodecCallbackException = new MediaCodecCallbackException() {
+            @Override
+            public void onException(Exception e) {
+                handleMediaCodecCallbackException(e);
             }
-            public void onOutputFormatChanged(MediaCodec codec, MediaFormat format) {
+        };
+        SafeMediaCodecCallback callback = new SafeMediaCodecCallback(mediaCodecCallbackException) {
+            @Override
+            public void onInputBufferAvailableSafe(@NonNull MediaCodec codec, int index) {
+
+            }
+
+            @Override
+            public void onOutputBufferAvailableSafe(@NonNull MediaCodec codec, int index,
+                                                    @NonNull MediaCodec.BufferInfo info) {
+                if (VERBOSE) {
+                    Log.d(TAG, "video encoder: returned output buffer: " + index);
+                    Log.d(TAG, "video encoder: returned buffer of size " + info.size);
+                }
+                muxVideo(index, info);
+            }
+
+            @Override
+            public void onOutputFormatChangedSafe(@NonNull MediaCodec codec,
+                                                  @NonNull MediaFormat format) {
                 if (VERBOSE) Log.d(TAG, "video encoder: output format changed");
                 if (mOutputVideoTrack >= 0) {
                     Log.d(TAG, "video encoder changed its output format again?");
@@ -720,16 +769,8 @@ public class ExtractDecodeEditEncodeMuxTest {
                 mEncoderOutputVideoFormat = codec.getOutputFormat();
                 setupMuxer();
             }
-            public void onInputBufferAvailable(MediaCodec codec, int index) {
-            }
-            public void onOutputBufferAvailable(MediaCodec codec, int index, MediaCodec.BufferInfo info) {
-                if (VERBOSE) {
-                    Log.d(TAG, "video encoder: returned output buffer: " + index);
-                    Log.d(TAG, "video encoder: returned buffer of size " + info.size);
-                }
-                muxVideo(index, info);
-            }
-        });
+        };
+        encoder.setCallback(callback);
         encoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
         // Must be called before start() is.
         surfaceReference.set(encoder.createInputSurface());
@@ -744,17 +785,15 @@ public class ExtractDecodeEditEncodeMuxTest {
      */
     private MediaCodec createAudioDecoder(MediaFormat inputFormat) throws IOException {
         MediaCodec decoder = MediaCodec.createDecoderByType(getMimeTypeFor(inputFormat));
-        decoder.setCallback(new MediaCodec.Callback() {
-            public void onError(MediaCodec codec, MediaCodec.CodecException exception) {
+        MediaCodecCallbackException mediaCodecCallbackException = new MediaCodecCallbackException() {
+            @Override
+            public void onException(Exception e) {
+                handleMediaCodecCallbackException(e);
             }
-            public void onOutputFormatChanged(MediaCodec codec, MediaFormat format) {
-                mDecoderOutputAudioFormat = codec.getOutputFormat();
-                if (VERBOSE) {
-                    Log.d(TAG, "audio decoder: output format changed: "
-                            + mDecoderOutputAudioFormat);
-                }
-            }
-            public void onInputBufferAvailable(MediaCodec codec, int index) {
+        };
+        SafeMediaCodecCallback callback = new SafeMediaCodecCallback(mediaCodecCallbackException) {
+            @Override
+            public void onInputBufferAvailableSafe(@NonNull MediaCodec codec, int index) {
                 ByteBuffer decoderInputBuffer = codec.getInputBuffer(index);
                 while (!mAudioExtractorDone) {
                     int size = mAudioExtractor.readSampleData(decoderInputBuffer, 0);
@@ -787,7 +826,10 @@ public class ExtractDecodeEditEncodeMuxTest {
                         break;
                 }
             }
-            public void onOutputBufferAvailable(MediaCodec codec, int index, MediaCodec.BufferInfo info) {
+
+            @Override
+            public void onOutputBufferAvailableSafe(@NonNull MediaCodec codec, int index,
+                                                    @NonNull MediaCodec.BufferInfo info) {
                 if (VERBOSE) {
                     Log.d(TAG, "audio decoder: returned output buffer: " + index);
                 }
@@ -810,7 +852,18 @@ public class ExtractDecodeEditEncodeMuxTest {
                 logState();
                 tryEncodeAudio();
             }
-        });
+
+            @Override
+            public void onOutputFormatChangedSafe(@NonNull MediaCodec codec,
+                                                  @NonNull MediaFormat format) {
+                mDecoderOutputAudioFormat = codec.getOutputFormat();
+                if (VERBOSE) {
+                    Log.d(TAG, "audio decoder: output format changed: "
+                            + mDecoderOutputAudioFormat);
+                }
+            }
+        };
+        decoder.setCallback(callback);
         decoder.configure(inputFormat, null, null, 0);
         decoder.start();
         return decoder;
@@ -824,10 +877,35 @@ public class ExtractDecodeEditEncodeMuxTest {
      */
     private MediaCodec createAudioEncoder(MediaCodecInfo codecInfo, MediaFormat format) throws IOException {
         MediaCodec encoder = MediaCodec.createByCodecName(codecInfo.getName());
-        encoder.setCallback(new MediaCodec.Callback() {
-            public void onError(MediaCodec codec, MediaCodec.CodecException exception) {
+        MediaCodecCallbackException mediaCodecCallbackException = new MediaCodecCallbackException() {
+            @Override
+            public void onException(Exception e) {
+                handleMediaCodecCallbackException(e);
             }
-            public void onOutputFormatChanged(MediaCodec codec, MediaFormat format) {
+        };
+        SafeMediaCodecCallback callback = new SafeMediaCodecCallback(mediaCodecCallbackException) {
+            @Override
+            public void onInputBufferAvailableSafe(@NonNull MediaCodec codec, int index) {
+                if (VERBOSE) {
+                    Log.d(TAG, "audio encoder: returned input buffer: " + index);
+                }
+                mPendingAudioEncoderInputBufferIndices.add(index);
+                tryEncodeAudio();
+            }
+
+            @Override
+            public void onOutputBufferAvailableSafe(@NonNull MediaCodec codec, int index,
+                                                    @NonNull MediaCodec.BufferInfo info) {
+                if (VERBOSE) {
+                    Log.d(TAG, "audio encoder: returned output buffer: " + index);
+                    Log.d(TAG, "audio encoder: returned buffer of size " + info.size);
+                }
+                muxAudio(index, info);
+            }
+
+            @Override
+            public void onOutputFormatChangedSafe(@NonNull MediaCodec codec,
+                                                  @NonNull MediaFormat format) {
                 if (VERBOSE) Log.d(TAG, "audio encoder: output format changed");
                 if (mOutputAudioTrack >= 0) {
                     Log.d(TAG, "audio encoder changed its output format again?");
@@ -836,21 +914,8 @@ public class ExtractDecodeEditEncodeMuxTest {
                 mEncoderOutputAudioFormat = codec.getOutputFormat();
                 setupMuxer();
             }
-            public void onInputBufferAvailable(MediaCodec codec, int index) {
-                if (VERBOSE) {
-                    Log.d(TAG, "audio encoder: returned input buffer: " + index);
-                }
-                mPendingAudioEncoderInputBufferIndices.add(index);
-                tryEncodeAudio();
-            }
-            public void onOutputBufferAvailable(MediaCodec codec, int index, MediaCodec.BufferInfo info) {
-                if (VERBOSE) {
-                    Log.d(TAG, "audio encoder: returned output buffer: " + index);
-                    Log.d(TAG, "audio encoder: returned buffer of size " + info.size);
-                }
-                muxAudio(index, info);
-            }
-        });
+        };
+        encoder.setCallback(callback);
         encoder.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
         encoder.start();
         return encoder;
@@ -1047,6 +1112,7 @@ public class ExtractDecodeEditEncodeMuxTest {
     private boolean mAudioExtractorDone = false;
     private boolean mAudioDecoderDone = false;
     private boolean mAudioEncoderDone = false;
+    private boolean mIsCrashed = false;
     private LinkedList<Integer> mPendingAudioDecoderOutputBufferIndices;
     private LinkedList<MediaCodec.BufferInfo> mPendingAudioDecoderOutputBufferInfos;
     private LinkedList<Integer> mPendingAudioEncoderInputBufferIndices;
@@ -1099,7 +1165,7 @@ public class ExtractDecodeEditEncodeMuxTest {
 
     private void awaitEncode() {
         synchronized (this) {
-            while ((mCopyVideo && !mVideoEncoderDone) || (mCopyAudio && !mAudioEncoderDone)) {
+            while (!mIsCrashed && ((mCopyVideo && !mVideoEncoderDone) || (mCopyAudio && !mAudioEncoderDone))) {
                 try {
                     wait();
                 } catch (InterruptedException ie) {
@@ -1116,6 +1182,11 @@ public class ExtractDecodeEditEncodeMuxTest {
         }
         if (mCopyAudio) {
             Log.d(TAG, "no frame should be pending: " + mPendingAudioDecoderOutputBufferIndices.size());
+        }
+
+        if (mIsCrashed) {
+            Log.e(TAG, "Crash!!! Something's wrong.");
+            throw new IllegalStateException();
         }
 
         // TODO: Check the generated output file.
